@@ -64,9 +64,11 @@ pub fn province_aliases() -> HashMap<&'static str, &'static str> {
 /// 城市简称（去掉"市"后缀）
 #[allow(dead_code)]
 pub fn normalize_city_name(city: &str) -> String {
-    if city.ends_with("市") {
-        city.to_string()
-    } else if city.ends_with("自治州") || city.ends_with("地区") || city.ends_with("盟") {
+    if city.ends_with("市")
+        || city.ends_with("自治州")
+        || city.ends_with("地区")
+        || city.ends_with("盟")
+    {
         city.to_string()
     } else {
         format!("{}市", city)

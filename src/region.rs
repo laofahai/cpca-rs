@@ -17,7 +17,11 @@ pub struct Region {
 
 impl Region {
     /// 创建新的行政区划记录
-    pub fn new(province: impl Into<String>, city: impl Into<String>, district: Option<String>) -> Self {
+    pub fn new(
+        province: impl Into<String>,
+        city: impl Into<String>,
+        district: Option<String>,
+    ) -> Self {
         Self {
             province: province.into(),
             city: city.into(),

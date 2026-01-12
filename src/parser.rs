@@ -110,20 +110,21 @@ impl AddressParser {
         let mut remaining = address.to_string();
 
         // 第一步：尝试匹配省份
-        if let Some((_matched, normalized, len)) = self.province_trie.find_longest_prefix(&remaining)
+        if let Some((_matched, normalized, len)) =
+            self.province_trie.find_longest_prefix(&remaining)
         {
             result.province = Some(normalized.clone());
             remaining = remaining[len..].to_string();
 
             // 直辖市特殊处理：省=市，直接跳到区县匹配
-            if self.index.is_municipality(&normalized) {
+            if self.index.is_municipality(normalized) {
                 result.city = Some(normalized.clone());
                 // 直接尝试匹配区县
                 if let Some((_m, dist_normalized, dist_len)) =
                     self.district_trie.find_longest_prefix(&remaining)
                 {
                     // 验证区县是否属于该直辖市
-                    if self.index.validate_district(&normalized, dist_normalized) {
+                    if self.index.validate_district(normalized, dist_normalized) {
                         result.district = Some(dist_normalized.clone());
                         remaining = remaining[dist_len..].to_string();
                     }
@@ -161,7 +162,8 @@ impl AddressParser {
         }
 
         // 第三步：尝试匹配区县
-        if let Some((_matched, normalized, len)) = self.district_trie.find_longest_prefix(&remaining)
+        if let Some((_matched, normalized, len)) =
+            self.district_trie.find_longest_prefix(&remaining)
         {
             // 验证区县是否合法
             let valid = if let Some(ref city) = result.city {
@@ -221,7 +223,9 @@ impl AddressParser {
         if let Some(districts) = self.index.city_districts.get(city) {
             for d in districts {
                 // 检查是否是简称
-                if d.starts_with(district) || district.starts_with(d.trim_end_matches(&['区', '县', '市', '旗'][..])) {
+                if d.starts_with(district)
+                    || district.starts_with(d.trim_end_matches(&['区', '县', '市', '旗'][..]))
+                {
                     return true;
                 }
             }
@@ -678,11 +682,7 @@ mod tests {
     #[test]
     fn test_parse_batch() {
         let p = parser();
-        let addresses = vec![
-            "广东省深圳市南山区",
-            "北京市朝阳区",
-            "上海市浦东新区",
-        ];
+        let addresses = vec!["广东省深圳市南山区", "北京市朝阳区", "上海市浦东新区"];
         let results = p.parse_batch(&addresses);
 
         assert_eq!(results.len(), 3);

@@ -1,5 +1,5 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use cpca::AddressParser;
+use criterion::{black_box, criterion_group, criterion_main, Criterion};
 
 fn benchmark_parse(c: &mut Criterion) {
     let parser = AddressParser::new();
@@ -17,7 +17,13 @@ fn benchmark_parse(c: &mut Criterion) {
     });
 
     c.bench_function("normalize", |b| {
-        b.iter(|| parser.normalize(black_box("广东"), black_box("深圳"), black_box(Some("南山"))))
+        b.iter(|| {
+            parser.normalize(
+                black_box("广东"),
+                black_box("深圳"),
+                black_box(Some("南山")),
+            )
+        })
     });
 }
 
@@ -42,9 +48,7 @@ fn benchmark_batch(c: &mut Criterion) {
 }
 
 fn benchmark_init(c: &mut Criterion) {
-    c.bench_function("parser_init", |b| {
-        b.iter(|| AddressParser::new())
-    });
+    c.bench_function("parser_init", |b| b.iter(|| AddressParser::new()));
 }
 
 criterion_group!(benches, benchmark_parse, benchmark_batch, benchmark_init);
