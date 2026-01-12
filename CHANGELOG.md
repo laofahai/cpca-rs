@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.0](https://github.com/laofahai/cpca-rs/compare/v0.1.0...v0.2.0) (2026-01-12)
+
+
+### Features
+
+* 优化同名地名解析策略 ([0dcd10a](https://github.com/laofahai/cpca-rs/commit/0dcd10af9c9fa13d395017e189699e7aa8d16095))
+
 ## 0.1.0 (2026-01-12)
 
 
