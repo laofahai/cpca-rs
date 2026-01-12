@@ -229,7 +229,8 @@ impl AddressParser {
                                 result.city = Some(cities[0].1.clone());
                             } else if let Some(ref province) = result.province {
                                 // 根据已知省份过滤
-                                if let Some((_, city)) = cities.iter().find(|(p, _)| p == province) {
+                                if let Some((_, city)) = cities.iter().find(|(p, _)| p == province)
+                                {
                                     result.city = Some(city.clone());
                                 }
                             }
@@ -875,7 +876,7 @@ mod tests {
         // 南山区在多个城市都有，无上下文时无法确定城市
         let r = p.parse("南山区");
         assert!(r.district.is_some()); // 能识别区
-        // 没有足够上下文，可能无法确定城市
+                                       // 没有足够上下文，可能无法确定城市
 
         // 有上下文时能正确识别
         let r = p.parse("深圳南山区");
