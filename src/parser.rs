@@ -134,74 +134,119 @@ impl AddressParser {
             }
         }
 
-        // 第二步：尝试匹配城市
-        if let Some((_matched, normalized, len)) = self.city_trie.find_longest_prefix(&remaining) {
-            // 如果已有省份，验证城市是否属于该省
-            let valid_city = if let Some(ref province) = result.province {
-                self.index
-                    .city_to_province
-                    .get(normalized)
-                    .map(|p| p == province)
-                    .unwrap_or(false)
-            } else {
-                true
-            };
+        // 第二步：尝试匹配城市（但要先检查是否应该优先匹配区县）
+        // 关键改进：当没有省份上下文时，如果输入看起来像区县（如"朝阳区"），应该优先匹配区县
+        let city_match = self.city_trie.find_longest_prefix(&remaining);
+        let district_match = self.district_trie.find_longest_prefix(&remaining);
 
-            if valid_city {
-                result.city = Some(normalized.clone());
-
-                // 如果之前没匹配到省份，尝试反向查找
-                if result.province.is_none() {
-                    if let Some(province) = self.index.city_to_province.get(normalized) {
-                        result.province = Some(province.clone());
-                    }
+        // 判断是否应该优先使用区县匹配
+        let prefer_district = if result.province.is_none() {
+            // 没有省份上下文时，检查区县匹配是否更长或更精确
+            match (&city_match, &district_match) {
+                (Some((_, _, city_len)), Some((_, dist_normalized, dist_len))) => {
+                    // 如果区县匹配更长，或者区县是完整形式（带后缀），优先使用区县
+                    *dist_len > *city_len
+                        || dist_normalized.ends_with('区')
+                        || dist_normalized.ends_with('县')
+                        || dist_normalized.ends_with('旗')
                 }
-
-                remaining = remaining[len..].to_string();
+                (Some(_), None) => false,
+                (None, Some(_)) => true,
+                (None, None) => false,
             }
-        }
+        } else {
+            false
+        };
 
-        // 第三步：尝试匹配区县
-        if let Some((_matched, normalized, len)) =
-            self.district_trie.find_longest_prefix(&remaining)
-        {
-            // 验证区县是否合法
-            let valid = if let Some(ref city) = result.city {
-                self.index.validate_district(city, normalized)
-                    || self.validate_district_flexible(city, normalized)
-            } else {
-                true // 没有城市信息时，先接受
-            };
+        if prefer_district {
+            // 优先处理区县匹配
+            if let Some((_matched, dist_normalized, dist_len)) = district_match {
+                result.district = Some(dist_normalized.clone());
 
-            if valid {
-                result.district = Some(normalized.clone());
-
-                // 如果之前没匹配到城市，尝试反向查找
-                if result.city.is_none() {
-                    if let Some(cities) = self.index.district_to_city.get(normalized) {
-                        if cities.len() == 1 {
-                            // 唯一匹配
-                            result.province = Some(cities[0].0.clone());
-                            result.city = Some(cities[0].1.clone());
-                        } else if let Some(ref province) = result.province {
-                            // 根据已知省份过滤
-                            if let Some((_, city)) = cities.iter().find(|(p, _)| p == province) {
-                                result.city = Some(city.clone());
-                            }
-                        }
+                // 尝试反向查找城市和省份
+                if let Some(cities) = self.index.district_to_city.get(dist_normalized) {
+                    if cities.len() == 1 {
+                        // 唯一匹配
+                        result.province = Some(cities[0].0.clone());
+                        result.city = Some(cities[0].1.clone());
                     }
+                    // 如果有多个匹配，不做假设，让用户提供更多上下文
                 }
 
-                // 如果有城市但没省份，再次尝试
-                if result.province.is_none() {
-                    if let Some(ref city) = result.city {
-                        if let Some(province) = self.index.city_to_province.get(city) {
+                remaining = remaining[dist_len..].to_string();
+            }
+        } else {
+            // 正常流程：先匹配城市
+            if let Some((_matched, normalized, len)) = city_match {
+                // 如果已有省份，验证城市是否属于该省
+                let valid_city = if let Some(ref province) = result.province {
+                    self.index
+                        .city_to_province
+                        .get(normalized)
+                        .map(|p| p == province)
+                        .unwrap_or(false)
+                } else {
+                    true
+                };
+
+                if valid_city {
+                    result.city = Some(normalized.clone());
+
+                    // 如果之前没匹配到省份，尝试反向查找
+                    if result.province.is_none() {
+                        if let Some(province) = self.index.city_to_province.get(normalized) {
                             result.province = Some(province.clone());
                         }
                     }
-                }
 
-                remaining = remaining[len..].to_string();
+                    remaining = remaining[len..].to_string();
+                }
+            }
+        }
+
+        // 第三步：尝试匹配区县（如果还没匹配到）
+        if result.district.is_none() {
+            if let Some((_matched, normalized, len)) =
+                self.district_trie.find_longest_prefix(&remaining)
+            {
+                // 验证区县是否合法
+                let valid = if let Some(ref city) = result.city {
+                    self.index.validate_district(city, normalized)
+                        || self.validate_district_flexible(city, normalized)
+                } else {
+                    true // 没有城市信息时，先接受
+                };
+
+                if valid {
+                    result.district = Some(normalized.clone());
+
+                    // 如果之前没匹配到城市，尝试反向查找
+                    if result.city.is_none() {
+                        if let Some(cities) = self.index.district_to_city.get(normalized) {
+                            if cities.len() == 1 {
+                                // 唯一匹配
+                                result.province = Some(cities[0].0.clone());
+                                result.city = Some(cities[0].1.clone());
+                            } else if let Some(ref province) = result.province {
+                                // 根据已知省份过滤
+                                if let Some((_, city)) = cities.iter().find(|(p, _)| p == province) {
+                                    result.city = Some(city.clone());
+                                }
+                            }
+                        }
+                    }
+
+                    // 如果有城市但没省份，再次尝试
+                    if result.province.is_none() {
+                        if let Some(ref city) = result.city {
+                            if let Some(province) = self.index.city_to_province.get(city) {
+                                result.province = Some(province.clone());
+                            }
+                        }
+                    }
+
+                    remaining = remaining[len..].to_string();
+                }
             }
         }
 
@@ -764,5 +809,143 @@ mod tests {
     fn test_global_normalize() {
         let result = crate::normalize("广东", "深圳", Some("南山"));
         assert_eq!(result, "广东省深圳市南山区");
+    }
+
+    // ==================== 自治州简称测试 ====================
+
+    #[test]
+    fn test_parse_autonomous_prefecture_short() {
+        let p = parser();
+
+        // 省+自治州简称
+        let r = p.parse("云南大理");
+        assert_eq!(r.province, Some("云南省".to_string()));
+        assert_eq!(r.city, Some("大理白族自治州".to_string()));
+
+        let r = p.parse("四川甘孜");
+        assert_eq!(r.province, Some("四川省".to_string()));
+        assert_eq!(r.city, Some("甘孜藏族自治州".to_string()));
+
+        // 省+县级市
+        let r = p.parse("四川康定");
+        assert_eq!(r.province, Some("四川省".to_string()));
+        assert_eq!(r.city, Some("甘孜藏族自治州".to_string()));
+        assert_eq!(r.district, Some("康定市".to_string()));
+    }
+
+    // ==================== 县级市测试 ====================
+
+    #[test]
+    fn test_parse_county_level_city() {
+        let p = parser();
+
+        // 只给县级市名
+        let r = p.parse("康定市");
+        assert_eq!(r.province, Some("四川省".to_string()));
+        assert_eq!(r.city, Some("甘孜藏族自治州".to_string()));
+        assert_eq!(r.district, Some("康定市".to_string()));
+
+        let r = p.parse("大理市");
+        assert_eq!(r.province, Some("云南省".to_string()));
+        assert_eq!(r.city, Some("大理白族自治州".to_string()));
+        assert_eq!(r.district, Some("大理市".to_string()));
+
+        let r = p.parse("义乌市");
+        assert_eq!(r.province, Some("浙江省".to_string()));
+        assert_eq!(r.city, Some("金华市".to_string()));
+        assert_eq!(r.district, Some("义乌市".to_string()));
+
+        let r = p.parse("昆山市");
+        assert_eq!(r.province, Some("江苏省".to_string()));
+        assert_eq!(r.city, Some("苏州市".to_string()));
+        assert_eq!(r.district, Some("昆山市".to_string()));
+
+        let r = p.parse("寿光市");
+        assert_eq!(r.province, Some("山东省".to_string()));
+        assert_eq!(r.city, Some("潍坊市".to_string()));
+        assert_eq!(r.district, Some("寿光市".to_string()));
+    }
+
+    // ==================== 边界情况测试 ====================
+
+    #[test]
+    fn test_parse_ambiguous_district() {
+        let p = parser();
+
+        // 南山区在多个城市都有，无上下文时无法确定城市
+        let r = p.parse("南山区");
+        assert!(r.district.is_some()); // 能识别区
+        // 没有足够上下文，可能无法确定城市
+
+        // 有上下文时能正确识别
+        let r = p.parse("深圳南山区");
+        assert_eq!(r.province, Some("广东省".to_string()));
+        assert_eq!(r.city, Some("深圳市".to_string()));
+        assert_eq!(r.district, Some("南山区".to_string()));
+    }
+
+    #[test]
+    fn test_parse_city_district_same_name() {
+        // 朝阳既是辽宁的地级市，也是北京/长春的区
+        let p = parser();
+
+        // 明确指定北京
+        let r = p.parse("北京朝阳");
+        assert_eq!(r.province, Some("北京市".to_string()));
+        assert_eq!(r.city, Some("北京市".to_string()));
+        assert_eq!(r.district, Some("朝阳区".to_string()));
+
+        // 明确指定长春
+        let r = p.parse("长春朝阳区");
+        assert_eq!(r.province, Some("吉林省".to_string()));
+        assert_eq!(r.city, Some("长春市".to_string()));
+        assert_eq!(r.district, Some("朝阳区".to_string()));
+    }
+
+    // ==================== 全量匹配优先测试 ====================
+
+    #[test]
+    fn test_full_match_priority() {
+        // 关键测试：朝阳区 应该匹配为区县，而不是朝阳市
+        let p = parser();
+
+        // "朝阳区" 应该识别为区县，而不是被解析成 "朝阳市"
+        let r = p.parse("朝阳区");
+        assert_eq!(r.district, Some("朝阳区".to_string()));
+        // 由于朝阳区在多个城市都有，不指定上下文时不应该推断城市
+        // 但绝对不应该被匹配成朝阳市
+
+        // 带上下文的情况
+        let r = p.parse("北京朝阳区");
+        assert_eq!(r.province, Some("北京市".to_string()));
+        assert_eq!(r.city, Some("北京市".to_string()));
+        assert_eq!(r.district, Some("朝阳区".to_string()));
+
+        // 辽宁朝阳市的情况 - 应该正确匹配为城市
+        let r = p.parse("辽宁朝阳");
+        assert_eq!(r.province, Some("辽宁省".to_string()));
+        assert_eq!(r.city, Some("朝阳市".to_string()));
+
+        let r = p.parse("辽宁省朝阳市");
+        assert_eq!(r.province, Some("辽宁省".to_string()));
+        assert_eq!(r.city, Some("朝阳市".to_string()));
+    }
+
+    #[test]
+    fn test_district_suffix_priority() {
+        // 带有明确后缀的区县应该优先匹配
+        let p = parser();
+
+        // 福田区 - 应该匹配为区县
+        let r = p.parse("福田区");
+        assert_eq!(r.district, Some("福田区".to_string()));
+
+        // 南山区 - 应该匹配为区县
+        let r = p.parse("南山区");
+        assert_eq!(r.district, Some("南山区".to_string()));
+
+        // 宝安区 - 应该匹配为区县
+        let r = p.parse("宝安区");
+        assert_eq!(r.district, Some("宝安区".to_string()));
     }
 }
