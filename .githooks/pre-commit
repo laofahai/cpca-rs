@@ -1,0 +1,19 @@
+#!/bin/sh
+
+# 运行 cargo fmt 检查
+echo "Running cargo fmt..."
+cargo fmt --all -- --check
+if [ $? -ne 0 ]; then
+    echo "❌ 代码格式检查失败，请运行 'cargo fmt' 修复"
+    exit 1
+fi
+
+# 运行 cargo clippy
+echo "Running cargo clippy..."
+cargo clippy -- -D warnings
+if [ $? -ne 0 ]; then
+    echo "❌ Clippy 检查失败，请修复警告"
+    exit 1
+fi
+
+echo "✅ 所有检查通过"
