@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/laofahai/cpca-rs/compare/v0.2.0...v0.2.1) (2026-01-12)
+
+
+### Bug Fixes
+
+* 移除 CI 中的 target 缓存 ([b17c119](https://github.com/laofahai/cpca-rs/commit/b17c11909a923c175d3b7791598f93907536126f))
+
 ## [0.2.0](https://github.com/laofahai/cpca-rs/compare/v0.1.0...v0.2.0) (2026-01-12)
 
 
