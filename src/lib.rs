@@ -4,11 +4,11 @@
 //!
 //! ## 功能特性
 //!
-//! - 从自由文本地址中提取省、市、区
+//! - 从地址前缀中提取省、市、区
 //! - 支持省份简称（如 "广东" -> "广东省"）
 //! - 支持直辖市特殊处理
 //! - 支持不设区的地级市（东莞、中山、儋州、嘉峪关）
-//! - 内置 2025 年最新行政区划数据（3600+ 条记录）
+//! - 内置 2026-04-03 区划快照及已核验补丁，历史名称单独标记
 //!
 //! ## 快速开始
 //!
@@ -41,7 +41,7 @@ mod trie;
 
 pub use error::ParseError;
 pub use parser::AddressParser;
-pub use region::{ParsedAddress, Region};
+pub use region::{AddressValidation, CheckedAddress, ParsedAddress, RecognitionStatus, Region};
 
 /// 便捷函数：使用全局解析器解析地址
 ///
@@ -51,6 +51,11 @@ pub use region::{ParsedAddress, Region};
 /// ```
 pub fn parse(address: &str) -> ParsedAddress {
     AddressParser::global().parse(address)
+}
+
+/// 便捷函数：解析并对照包内现行与历史表校验。
+pub fn parse_with_status(address: &str) -> CheckedAddress {
+    AddressParser::global().parse_with_status(address)
 }
 
 /// 便捷函数：标准化地址

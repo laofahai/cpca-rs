@@ -137,3 +137,47 @@ mod tests {
         assert_eq!(addr.full_address(), "北京市朝阳区望京");
     }
 }
+
+/// 与包内快照的匹配状态；不代表输入地址真实有效。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub enum RecognitionStatus {
+    /// 命中现行快照。
+    Current,
+    /// 已核验的旧行政名称。
+    Historical,
+    /// 旧管理区域称呼。
+    HistoricalManagement,
+    /// 农场、园区等地点名称。
+    Place,
+    /// 来源待核验或已识别层级冲突。
+    NeedsReview,
+    /// 存在多个归属候选，不能唯一补全。
+    Ambiguous,
+    /// 信息不足，无法判断完整区划状态。
+    Incomplete,
+}
+
+/// 区划组合校验结果。
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct AddressValidation {
+    /// 名称及组合状态。
+    pub status: RecognitionStatus,
+    /// 历史变更说明或需要核验的原因。
+    pub note: String,
+    /// 有明确依据时提供现行名称建议，不自动替换原名。
+    pub current_name: Option<String>,
+    /// 歧义时的候选归属，按省、市、区排序。
+    pub candidates: Vec<Region>,
+}
+
+/// 保持原解析结构，并附加区划校验信息。
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct CheckedAddress {
+    /// 原有解析结果。
+    pub address: ParsedAddress,
+    /// 对照本地快照的校验结果。
+    pub validation: AddressValidation,
+}

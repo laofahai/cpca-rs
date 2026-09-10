@@ -48,7 +48,7 @@ fn benchmark_batch(c: &mut Criterion) {
 }
 
 fn benchmark_init(c: &mut Criterion) {
-    c.bench_function("parser_init", |b| b.iter(|| AddressParser::new()));
+    c.bench_function("parser_init", |b| b.iter(AddressParser::new));
 }
 
 criterion_group!(benches, benchmark_parse, benchmark_batch, benchmark_init);

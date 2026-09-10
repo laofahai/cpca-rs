@@ -1,6 +1,6 @@
 [package]
 name = "cpca"
-version = "0.2.1"
+version = "0.3.0"
 edition = "2021"
 authors = ["laofahai"]
 description = "Chinese Province, City and Area Parser - 中国省市区地址解析库"
@@ -12,6 +12,8 @@ keywords = ["chinese", "address", "parser", "province", "city"]
 categories = ["text-processing", "localization"]
 include = [
     "src/**/*",
+    "tests/**/*",
+    "docs/**/*.md",
     "data/**/*",
     "Cargo.toml",
     "README.md",

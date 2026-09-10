@@ -1,10 +1,62 @@
 //! 省市区数据加载和索引构建
 
-use crate::region::Region;
+use crate::region::{RecognitionStatus, Region};
 use std::collections::{HashMap, HashSet};
 
 /// 内嵌的省市区数据（编译时包含）
 const PCA_DATA: &str = include_str!("../data/pca.csv");
+const LEGACY_DATA: &str = include_str!("../data/pca_legacy.csv");
+const ALIAS_DATA: &str = include_str!("../data/pca_aliases.csv");
+
+pub(crate) struct NameMetadata {
+    pub status: RecognitionStatus,
+    pub note: String,
+    pub current_name: Option<String>,
+}
+
+pub(crate) fn legacy_metadata() -> HashMap<Region, NameMetadata> {
+    LEGACY_DATA
+        .lines()
+        .skip(1)
+        .map(|line| {
+            let fields: Vec<_> = line.split(',').map(str::trim).collect();
+            let region = Region::new(fields[1], fields[2], Some(fields[3].to_string()));
+            let status = match fields[4] {
+                "历史名称" => RecognitionStatus::Historical,
+                "历史管理名称" => RecognitionStatus::HistoricalManagement,
+                "地点名称" => RecognitionStatus::Place,
+                _ => RecognitionStatus::NeedsReview,
+            };
+            (
+                region,
+                NameMetadata {
+                    status,
+                    note: fields[5].to_string(),
+                    current_name: (!fields[6].is_empty()).then(|| fields[6].to_string()),
+                },
+            )
+        })
+        .collect()
+}
+
+pub(crate) fn address_aliases() -> Vec<(&'static str, &'static str, &'static str)> {
+    ALIAS_DATA
+        .lines()
+        .skip(1)
+        .map(|line| {
+            let fields: Vec<_> = line.split(',').map(str::trim).collect();
+            (
+                fields[0],
+                fields[1],
+                if fields[1] == "city" {
+                    fields[3]
+                } else {
+                    fields[4]
+                },
+            )
+        })
+        .collect()
+}
 
 /// 直辖市列表
 pub const MUNICIPALITIES: [&str; 4] = ["北京市", "上海市", "天津市", "重庆市"];
@@ -94,7 +146,7 @@ pub fn normalize_district_name(district: &str) -> String {
 pub fn load_regions() -> Vec<Region> {
     let mut regions = Vec::new();
 
-    for line in PCA_DATA.lines().skip(1) {
+    for line in PCA_DATA.lines().skip(1).chain(LEGACY_DATA.lines().skip(1)) {
         // 跳过表头
         let parts: Vec<&str> = line.split(',').collect();
         if parts.len() >= 3 {
@@ -112,6 +164,8 @@ pub fn load_regions() -> Vec<Region> {
         }
     }
 
+    let mut seen = HashSet::new();
+    regions.retain(|region| seen.insert(region.clone()));
     regions
 }
 

@@ -1,10 +1,12 @@
 //! 地址解析器核心实现
 
-use crate::data::{load_regions, province_aliases, RegionIndex};
-use crate::region::ParsedAddress;
+use crate::data::{
+    address_aliases, legacy_metadata, load_regions, province_aliases, NameMetadata, RegionIndex,
+};
+use crate::region::{AddressValidation, CheckedAddress, ParsedAddress, RecognitionStatus, Region};
 use crate::trie::Trie;
 use once_cell::sync::Lazy;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// 全局解析器实例
 static GLOBAL_PARSER: Lazy<AddressParser> = Lazy::new(AddressParser::new);
@@ -21,8 +23,24 @@ pub struct AddressParser {
     district_trie: Trie<String>,
     /// 区域索引
     index: RegionIndex,
+    district_aliases: HashMap<String, Vec<String>>,
+    legacy: HashMap<Region, NameMetadata>,
+    reviewed_district_aliases: HashSet<String>,
     /// 省份简称映射
     province_aliases: HashMap<&'static str, &'static str>,
+}
+
+fn is_separator(c: char) -> bool {
+    c.is_whitespace() || matches!(c, '-' | ',' | '，' | '、' | '/')
+}
+
+fn is_road_suffix(tail: &str) -> bool {
+    let tail = tail
+        .strip_prefix(['东', '西', '南', '北', '中'])
+        .unwrap_or(tail);
+    ["路", "街", "巷", "大道", "大街", "胡同", "风情街"]
+        .iter()
+        .any(|suffix| tail.starts_with(suffix))
 }
 
 impl AddressParser {
@@ -55,19 +73,41 @@ impl AddressParser {
             }
         }
 
-        // 构建区县前缀树
-        let mut district_trie = Trie::new();
+        // 同一简称保留全部全名候选，避免 HashSet 遍历顺序决定结果。
+        let mut district_aliases: HashMap<String, Vec<String>> = HashMap::new();
         for district in &index.districts {
-            district_trie.insert(district, district.clone());
-            // 添加简称
-            for suffix in &["区", "县", "市", "旗"] {
-                if district.ends_with(suffix) {
-                    let short = district.trim_end_matches(suffix);
-                    if !short.is_empty() && short.chars().count() >= 2 {
-                        district_trie.insert(short, district.clone());
+            district_aliases
+                .entry(district.clone())
+                .or_default()
+                .push(district.clone());
+            for suffix in ["区", "县", "市", "旗", "镇", "街道"] {
+                if let Some(short) = district.strip_suffix(suffix) {
+                    if short.chars().count() >= 2 {
+                        district_aliases
+                            .entry(short.to_string())
+                            .or_default()
+                            .push(district.clone());
                     }
                 }
             }
+        }
+        let mut reviewed_district_aliases = HashSet::new();
+        for (alias, level, full) in address_aliases() {
+            if level == "city" {
+                city_trie.insert(alias, full.to_string());
+            } else {
+                reviewed_district_aliases.insert(alias.to_string());
+                district_aliases
+                    .entry(alias.to_string())
+                    .or_default()
+                    .push(full.to_string());
+            }
+        }
+        let mut district_trie = Trie::new();
+        for (alias, names) in &mut district_aliases {
+            names.sort();
+            names.dedup();
+            district_trie.insert(alias, alias.clone());
         }
 
         Self {
@@ -75,8 +115,91 @@ impl AddressParser {
             city_trie,
             district_trie,
             index,
+            district_aliases,
+            legacy: legacy_metadata(),
+            reviewed_district_aliases,
             province_aliases: aliases,
         }
+    }
+
+    /// 解析地址并返回现行、历史、地点、歧义或冲突状态。
+    ///
+    /// 校验基于包内数据快照，无联网请求；不会自动替换历史名称。
+    pub fn parse_with_status(&self, input: &str) -> CheckedAddress {
+        let address = self.parse(input);
+        let validation = self.validate(&address);
+        CheckedAddress {
+            address,
+            validation,
+        }
+    }
+
+    /// 对照包内数据校验已解析的省市区组合，不校验门牌或建筑物真实性。
+    pub fn validate(&self, address: &ParsedAddress) -> AddressValidation {
+        let mut result = AddressValidation {
+            status: RecognitionStatus::Incomplete,
+            note: "未取得完整省市区归属；不能据此判断名称是否现行。".into(),
+            current_name: None,
+            candidates: Vec::new(),
+        };
+        if let Some(district) = &address.district {
+            if let Some(parents) = self
+                .index
+                .district_to_city
+                .get(district)
+                .filter(|_| self.index.districts.contains(district))
+            {
+                result.candidates = parents
+                    .iter()
+                    .filter(|(p, c)| {
+                        address.province.as_ref().is_none_or(|known| known == p)
+                            && address.city.as_ref().is_none_or(|known| known == c)
+                    })
+                    .map(|(p, c)| Region::new(p.clone(), c.clone(), Some(district.clone())))
+                    .collect();
+                result.candidates.sort_by(|a, b| {
+                    (&a.province, &a.city, &a.district).cmp(&(&b.province, &b.city, &b.district))
+                });
+                result.candidates.dedup();
+            }
+            if result.candidates.is_empty() {
+                result.status = RecognitionStatus::NeedsReview;
+                result.note = "省市区组合不在数据表中或层级互相矛盾，请核对原地址。".into();
+            } else if result.candidates.len() > 1 {
+                result.status = RecognitionStatus::Ambiguous;
+                result.note = "存在多个归属候选，请补充省份或城市。".into();
+            } else if address.is_complete() {
+                if let Some(meta) = self.legacy.get(&result.candidates[0]) {
+                    result.status = meta.status;
+                    result.note = meta.note.clone();
+                    result.current_name = meta.current_name.clone();
+                } else {
+                    result.status = RecognitionStatus::Current;
+                    result.note.clear();
+                }
+            }
+            if result.status != RecognitionStatus::Ambiguous {
+                result.candidates.clear();
+            }
+        } else if let Some(city) = &address.city {
+            if self
+                .index
+                .city_to_province
+                .get(city)
+                .is_none_or(|p| address.province.as_ref().is_some_and(|known| known != p))
+            {
+                result.status = RecognitionStatus::NeedsReview;
+                result.note = "省市组合不在数据表中或层级互相矛盾，请核对原地址。".into();
+            }
+        } else if address
+            .province
+            .as_ref()
+            .is_some_and(|p| !self.index.provinces.contains(p))
+        {
+            result.status = RecognitionStatus::NeedsReview;
+            result.note = "省份不在数据表中，请核对原地址。".into();
+        }
+        result
     }
 
     /// 获取全局解析器实例
@@ -110,8 +233,20 @@ impl AddressParser {
         let mut remaining = address.to_string();
 
         // 第一步：尝试匹配省份
-        if let Some((_matched, normalized, len)) =
-            self.province_trie.find_longest_prefix(&remaining)
+        if let Some((_matched, normalized, len)) = self
+            .province_trie
+            .find_longest_prefix(&remaining)
+            .filter(|(matched, full, len)| {
+                if *matched == full.as_str() {
+                    return true;
+                }
+                !is_road_suffix(&remaining[*len..])
+                    && !self.city_trie.find_longest_prefix(&remaining).is_some_and(
+                        |(city_matched, city_full, city_len)| {
+                            city_matched == city_full && city_len > *len
+                        },
+                    )
+            })
         {
             result.province = Some(normalized.clone());
             remaining = remaining[len..].to_string();
@@ -119,43 +254,46 @@ impl AddressParser {
             // 直辖市特殊处理：省=市，直接跳到区县匹配
             if self.index.is_municipality(normalized) {
                 result.city = Some(normalized.clone());
-                // 直接尝试匹配区县
-                if let Some((_m, dist_normalized, dist_len)) =
-                    self.district_trie.find_longest_prefix(&remaining)
-                {
-                    // 验证区县是否属于该直辖市
-                    if self.index.validate_district(normalized, dist_normalized) {
-                        result.district = Some(dist_normalized.clone());
-                        remaining = remaining[dist_len..].to_string();
-                    }
+                if let Some(tail) = remaining.strip_prefix(normalized.as_str()) {
+                    remaining = tail.to_string();
                 }
-                result.detail = remaining.trim().to_string();
-                return result;
             }
         }
 
         // 第二步：尝试匹配城市（但要先检查是否应该优先匹配区县）
-        // 关键改进：当没有省份上下文时，如果输入看起来像区县（如"朝阳区"），应该优先匹配区县
-        let city_match = self.city_trie.find_longest_prefix(&remaining);
-        let district_match = self.district_trie.find_longest_prefix(&remaining);
+        // 按原文实际匹配长度和全称优先级决策，不让城市简称抢占完整区县名。
+        let city_match =
+            self.city_trie
+                .find_longest_prefix(&remaining)
+                .filter(|(matched, full, len)| {
+                    result.city.is_none()
+                        && (*matched == full.as_str()
+                            || !is_road_suffix(&remaining[*len..])
+                            || self
+                                .index
+                                .city_districts
+                                .get(full.as_str())
+                                .is_some_and(|ds| {
+                                    ds.iter().any(|d| remaining[*len..].starts_with(d))
+                                }))
+                });
+        let district_match =
+            self.match_district(&remaining, &result)
+                .filter(|(matched, full, len)| {
+                    self.allow_district(matched, full, &remaining[*len..], &result)
+                });
 
         // 判断是否应该优先使用区县匹配
-        let prefer_district = if result.province.is_none() {
-            // 没有省份上下文时，检查区县匹配是否更长或更精确
-            match (&city_match, &district_match) {
-                (Some((_, _, city_len)), Some((_, dist_normalized, dist_len))) => {
-                    // 如果区县匹配更长，或者区县是完整形式（带后缀），优先使用区县
-                    *dist_len > *city_len
-                        || dist_normalized.ends_with('区')
-                        || dist_normalized.ends_with('县')
-                        || dist_normalized.ends_with('旗')
-                }
-                (Some(_), None) => false,
-                (None, Some(_)) => true,
-                (None, None) => false,
+        let prefer_district = match (&city_match, &district_match) {
+            (Some((_, _, city_len)), Some((dist_matched, dist_normalized, dist_len))) => {
+                // 如果区县匹配更长，或者区县是完整形式（带后缀），优先使用区县
+                *dist_len > *city_len
+                    || (*dist_len == *city_len && *dist_matched == dist_normalized.as_str())
+                    || self.following_parent_matches(dist_normalized, &remaining[*dist_len..])
             }
-        } else {
-            false
+            (Some(_), None) => false,
+            (None, Some(_)) => true,
+            (None, None) => false,
         };
 
         if prefer_district {
@@ -163,21 +301,11 @@ impl AddressParser {
             if let Some((_matched, dist_normalized, dist_len)) = district_match {
                 result.district = Some(dist_normalized.clone());
 
-                // 尝试反向查找城市和省份
-                if let Some(cities) = self.index.district_to_city.get(dist_normalized) {
-                    if cities.len() == 1 {
-                        // 唯一匹配
-                        result.province = Some(cities[0].0.clone());
-                        result.city = Some(cities[0].1.clone());
-                    }
-                    // 如果有多个匹配，不做假设，让用户提供更多上下文
-                }
-
                 remaining = remaining[dist_len..].to_string();
             }
         } else {
             // 正常流程：先匹配城市
-            if let Some((_matched, normalized, len)) = city_match {
+            if let Some((matched, normalized, len)) = city_match {
                 // 如果已有省份，验证城市是否属于该省
                 let valid_city = if let Some(ref province) = result.province {
                     self.index
@@ -189,30 +317,36 @@ impl AddressParser {
                     true
                 };
 
-                if valid_city {
+                if valid_city || matched == normalized {
                     result.city = Some(normalized.clone());
-
-                    // 如果之前没匹配到省份，尝试反向查找
-                    if result.province.is_none() {
-                        if let Some(province) = self.index.city_to_province.get(normalized) {
-                            result.province = Some(province.clone());
-                        }
-                    }
 
                     remaining = remaining[len..].to_string();
                 }
             }
         }
 
+        // 市在省前时先读省份，再继续读取区县。
+        if let Some(city) = result.city.as_ref().filter(|_| result.province.is_none()) {
+            let tail = remaining.trim_start_matches(is_separator);
+            if let Some((matched, province, len)) = self.province_trie.find_longest_prefix(tail) {
+                let correct_parent = self.index.city_to_province.get(city) == Some(province);
+                if matched == province || correct_parent && self.parent_alias_boundary(&tail[len..])
+                {
+                    result.province = Some(province.clone());
+                    remaining = tail[len..].to_string();
+                }
+            }
+        }
+
         // 第三步：尝试匹配区县（如果还没匹配到）
         if result.district.is_none() {
-            if let Some((_matched, normalized, len)) =
-                self.district_trie.find_longest_prefix(&remaining)
+            if let Some((matched, normalized, len)) = self
+                .match_district(&remaining, &result)
+                .filter(|(m, f, n)| self.allow_district(m, f, &remaining[*n..], &result))
             {
                 // 验证区县是否合法
                 let valid = if let Some(ref city) = result.city {
-                    self.index.validate_district(city, normalized)
-                        || self.validate_district_flexible(city, normalized)
+                    matched == normalized || self.index.validate_district(city, normalized)
                 } else {
                     true // 没有城市信息时，先接受
                 };
@@ -220,34 +354,58 @@ impl AddressParser {
                 if valid {
                     result.district = Some(normalized.clone());
 
-                    // 如果之前没匹配到城市，尝试反向查找
-                    if result.city.is_none() {
-                        if let Some(cities) = self.index.district_to_city.get(normalized) {
-                            if cities.len() == 1 {
-                                // 唯一匹配
-                                result.province = Some(cities[0].0.clone());
-                                result.city = Some(cities[0].1.clone());
-                            } else if let Some(ref province) = result.province {
-                                // 根据已知省份过滤
-                                if let Some((_, city)) = cities.iter().find(|(p, _)| p == province)
-                                {
-                                    result.city = Some(city.clone());
-                                }
-                            }
-                        }
-                    }
-
-                    // 如果有城市但没省份，再次尝试
-                    if result.province.is_none() {
-                        if let Some(ref city) = result.city {
-                            if let Some(province) = self.index.city_to_province.get(city) {
-                                result.province = Some(province.clone());
-                            }
-                        }
-                    }
-
                     remaining = remaining[len..].to_string();
                 }
+            }
+        }
+
+        // 区在前时继续读取明确父级，市/省顺序均可；简称必须有边界。
+        if result.district.is_some() {
+            for _ in 0..2 {
+                let tail = remaining.trim_start_matches(is_separator);
+                if result.city.is_none() {
+                    if let Some((matched, city, len)) = self.city_trie.find_longest_prefix(tail) {
+                        if matched == city || self.parent_alias_boundary(&tail[len..]) {
+                            result.city = Some(city.clone());
+                            remaining = tail[len..].to_string();
+                            continue;
+                        }
+                    }
+                }
+                if result.province.is_none() {
+                    if let Some((matched, province, len)) =
+                        self.province_trie.find_longest_prefix(tail)
+                    {
+                        if matched == province || self.parent_alias_boundary(&tail[len..]) {
+                            result.province = Some(province.clone());
+                            remaining = tail[len..].to_string();
+                            continue;
+                        }
+                    }
+                }
+                break;
+            }
+        }
+        // 只在符合全部明确父级且归属唯一时补全，不覆盖原文。
+        if let Some(ref district) = result.district {
+            if let Some(parents) = self.index.district_to_city.get(district) {
+                let candidates: std::collections::HashSet<_> = parents
+                    .iter()
+                    .filter(|(p, c)| {
+                        result.province.as_ref().is_none_or(|known| known == p)
+                            && result.city.as_ref().is_none_or(|known| known == c)
+                    })
+                    .collect();
+                if candidates.len() == 1 {
+                    let (province, city) = candidates.into_iter().next().unwrap();
+                    result.province.get_or_insert_with(|| province.clone());
+                    result.city.get_or_insert_with(|| city.clone());
+                }
+            }
+        }
+        if result.province.is_none() {
+            if let Some(ref city) = result.city {
+                result.province = self.index.city_to_province.get(city).cloned();
             }
         }
 
@@ -264,19 +422,107 @@ impl AddressParser {
         result
     }
 
-    /// 灵活验证区县（处理简称情况）
-    fn validate_district_flexible(&self, city: &str, district: &str) -> bool {
-        if let Some(districts) = self.index.city_districts.get(city) {
-            for d in districts {
-                // 检查是否是简称
-                if d.starts_with(district)
-                    || district.starts_with(d.trim_end_matches(&['区', '县', '市', '旗'][..]))
-                {
-                    return true;
-                }
-            }
+    // 逆序简称必须有边界，不能吞掉“吉林大学”“山东大厦”中的地名。
+    fn parent_alias_boundary(&self, tail: &str) -> bool {
+        if is_road_suffix(tail) {
+            return false;
         }
-        false
+        tail.is_empty()
+            || tail.starts_with(is_separator)
+            || self
+                .district_trie
+                .find_longest_prefix(tail)
+                .is_some_and(|(m, _, _)| self.index.districts.contains(m))
+            || self
+                .province_trie
+                .find_longest_prefix(tail)
+                .is_some_and(|(m, full, _)| m == full)
+            || self
+                .city_trie
+                .find_longest_prefix(tail)
+                .is_some_and(|(m, full, _)| m == full)
+    }
+
+    fn following_parent_matches(&self, district: &str, tail: &str) -> bool {
+        let tail = tail.trim_start_matches(is_separator);
+        let parents = &self.index.district_to_city[district];
+        self.city_trie
+            .find_longest_prefix(tail)
+            .is_some_and(|(matched, city, len)| {
+                (matched == city || self.parent_alias_boundary(&tail[len..]))
+                    && parents.iter().any(|(_, c)| c == city)
+            })
+            || self.province_trie.find_longest_prefix(tail).is_some_and(
+                |(matched, province, len)| {
+                    (matched == province || self.parent_alias_boundary(&tail[len..]))
+                        && parents.iter().any(|(p, _)| p == province)
+                },
+            )
+    }
+
+    fn match_district<'a>(
+        &'a self,
+        text: &'a str,
+        result: &ParsedAddress,
+    ) -> Option<(&'a str, &'a String, usize)> {
+        let (matched, _, len) = self.district_trie.find_longest_prefix(text)?;
+        let names = &self.district_aliases[matched];
+        // 原文全名不可被同名简称覆盖，冲突交给输出校验。
+        if let Some(full) = names.iter().find(|name| name.as_str() == matched) {
+            return Some((matched, full, len));
+        }
+        let mut candidates: Vec<_> = names
+            .iter()
+            .filter(|name| {
+                self.index.district_to_city[*name].iter().any(|(p, c)| {
+                    result.province.as_ref().is_none_or(|known| known == p)
+                        && result.city.as_ref().is_none_or(|known| known == c)
+                })
+            })
+            .collect();
+        let following: Vec<_> = candidates
+            .iter()
+            .copied()
+            .filter(|name| self.following_parent_matches(name, &text[len..]))
+            .collect();
+        if !following.is_empty() {
+            candidates = following;
+        }
+        if candidates.len() == 1 {
+            Some((matched, candidates[0], len))
+        } else {
+            None
+        }
+    }
+
+    // 无上下文的短区名需要地址线索，避免把“合作共赢”识别为合作市。
+    fn allow_district(
+        &self,
+        matched: &str,
+        full: &str,
+        tail: &str,
+        result: &ParsedAddress,
+    ) -> bool {
+        if matched == full || self.reviewed_district_aliases.contains(matched) {
+            return true;
+        }
+        if is_road_suffix(tail) {
+            return false;
+        }
+        result.province.is_some()
+            || result.city.is_some()
+            || tail.trim().is_empty()
+            || ["路", "街", "巷", "园", "村", "小区"]
+                .iter()
+                .any(|cue| tail.chars().take(10).collect::<String>().contains(cue))
+            || self
+                .city_trie
+                .find_longest_prefix(tail.trim_start_matches(is_separator))
+                .is_some()
+            || self
+                .province_trie
+                .find_longest_prefix(tail.trim_start_matches(is_separator))
+                .is_some()
     }
 
     /// 标准化地址
@@ -373,7 +619,9 @@ impl AddressParser {
         addresses.iter().map(|a| self.parse(a)).collect()
     }
 
-    /// 检查地址是否有效（至少能解析出省或市）
+    /// 兼容接口：仅判断是否解析出省或市，不代表区划或地址有效。
+    ///
+    /// 需要区划状态时请使用 [`Self::parse_with_status`] 或 [`Self::validate`]。
     pub fn is_valid_address(&self, address: &str) -> bool {
         let result = self.parse(address);
         result.province.is_some() || result.city.is_some()

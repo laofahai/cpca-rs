@@ -18,6 +18,21 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Run tests
+        run: cargo test --all-features
+
+      - name: Verify release version
+        if: github.event_name == 'release'
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          python3 - <<'PYCODE'
+          import json, os, subprocess
+          metadata = json.loads(subprocess.check_output(["cargo", "metadata", "--no-deps", "--format-version", "1"]))
+          version = metadata["packages"][0]["version"]
+          assert os.environ["RELEASE_TAG"] == "v" + version, "Release tag must match Cargo.toml"
+          PYCODE
+
       - name: Verify package
         run: cargo package --allow-dirty
 
