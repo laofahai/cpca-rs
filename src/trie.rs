@@ -60,10 +60,7 @@ impl<T: Clone> Trie<T> {
     pub fn get(&self, word: &str) -> Option<&T> {
         let mut node = &self.root;
         for ch in word.chars() {
-            match node.children.get(&ch) {
-                Some(n) => node = n,
-                None => return None,
-            }
+            node = node.children.get(&ch)?;
         }
         if node.is_end {
             node.value.as_ref()
