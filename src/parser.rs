@@ -240,7 +240,22 @@ impl AddressParser {
                 if *matched == full.as_str() {
                     return true;
                 }
-                !is_road_suffix(&remaining[*len..])
+                let tail = &remaining[*len..];
+                let full_child =
+                    self.district_trie
+                        .find_longest_prefix(tail)
+                        .is_some_and(|(name, _, _)| {
+                            self.index.districts.contains(name)
+                                && self.index.district_to_city[name]
+                                    .iter()
+                                    .any(|(p, _)| p == *full)
+                        })
+                        || self.city_trie.find_longest_prefix(tail).is_some_and(
+                            |(name, city, _)| {
+                                name == city && self.index.city_to_province.get(city) == Some(full)
+                            },
+                        );
+                (!is_road_suffix(tail) || full_child)
                     && !self.city_trie.find_longest_prefix(&remaining).is_some_and(
                         |(city_matched, city_full, city_len)| {
                             city_matched == city_full && city_len > *len

@@ -120,3 +120,20 @@ fn explicit_county_suffix_wins_over_city_alias_with_province() {
     assert_eq!(r.district.as_deref(), Some("朝阳县"));
     assert_eq!(r.detail, "人民路1号");
 }
+
+#[test]
+fn province_alias_before_full_district_is_not_a_road() {
+    for (text, province, city, district) in [
+        ("浙江路桥区人民路1号", "浙江省", "台州市", "路桥区"),
+        ("河北路南区人民路1号", "河北省", "唐山市", "路南区"),
+    ] {
+        let r = AddressParser::global().parse(text);
+        assert_eq!(r.province.as_deref(), Some(province), "{text}");
+        assert_eq!(r.city.as_deref(), Some(city), "{text}");
+        assert_eq!(r.district.as_deref(), Some(district), "{text}");
+        assert_eq!(r.detail, "人民路1号");
+    }
+    let r = AddressParser::global().parse("浙江路1号");
+    assert_eq!(r.province, None);
+    assert_eq!(r.detail, "浙江路1号");
+}
